@@ -132,23 +132,60 @@ def handle_message(user_id, reply_token, text):
 
     if user["state"] == "waiting_phone":
         phone_number = re.sub(r"[\s-]", "", text)
+
+        # 先檢查手機格式
         if re.fullmatch(r"09\d{8}", phone_number) is None:
             reply_line_message(
                 reply_token,
                 "手機號碼格式不正確，請輸入 09 開頭的 10 碼手機號碼："
             )
             return
-        update_phone(user_id, phone_number)
-        reply_line_message(
-            reply_token,
-            (
-                "✅ 設定完成\n\n"
-                f"房號：{user['room_number'] or ''}\n\n"
-                "每天中午 12:00 會自動查詢電費餘額並通知你。\n\n"
-                "你也可以輸入「查詢」立即查詢目前餘額。"
+
+        room_number = user["room_number"]
+
+        # 實際向電費網站驗證房號 + 手機
+        try:
+            balance = get_electricity_balance(
+                room_number,
+                phone_number
             )
+
+        except Exception:
+            logger.exception(
+                "Electricity account verification failed for user %s",
+                user_id
+            )
+
+            reply_line_message(
+                reply_token,
+                (
+                    "❌ 無法使用這組房號與手機號碼查到電費資料。\n\n"
+                    "請確認資料是否正確後，重新輸入手機號碼。\n"
+                    "如需重新輸入房號，請輸入「設定」。"
+                )
+            )
+            return
+
+    # 驗證成功後才正式儲存
+    update_phone(
+        user_id,
+        phone_number
+    )
+
+    user = get_user(user_id)
+
+    reply_line_message(
+        reply_token,
+        (
+            "✅ 設定完成\n\n"
+            f"房號：{user['room_number']}\n"
+            f"目前電費餘額：{balance} 元\n\n"
+            "每天中午 12:00 會自動查詢電費餘額並通知你。\n\n"
+            "你也可以輸入「查詢」立即查詢目前餘額。"
         )
-        return
+    )
+
+    return
 
     reply_line_message(
         reply_token,
