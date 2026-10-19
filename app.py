@@ -4,10 +4,11 @@ import hmac
 import logging
 import os
 import re
+import requests
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from flask import Flask, abort, request
+from flask import Flask, abort, request, Response
 from waitress import serve
 
 import config
@@ -166,32 +167,100 @@ def handle_message(user_id, reply_token, text):
             )
             return
 
-    # 驗證成功後才正式儲存
-    update_phone(
-        user_id,
-        phone_number
-    )
-
-    user = get_user(user_id)
-
-    reply_line_message(
-        reply_token,
-        (
-            "✅ 設定完成\n\n"
-            f"房號：{user['room_number']}\n"
-            f"目前電費餘額：{balance} 元\n\n"
-            "每天中午 12:00 會自動查詢電費餘額並通知你。\n\n"
-            "你也可以輸入「查詢」立即查詢目前餘額。"
+        # 驗證成功後才正式儲存
+        update_phone(
+            user_id,
+            phone_number
         )
-    )
 
-    return
+        user = get_user(user_id)
+
+        reply_line_message(
+            reply_token,
+            (
+                "✅ 設定完成\n\n"
+                f"房號：{user['room_number']}\n"
+                f"目前電費餘額：{balance} 元\n\n"
+                "每天中午 12:00 會自動查詢電費餘額並通知你。\n\n"
+                "你也可以輸入「查詢」立即查詢目前餘額。"
+            )
+        )
+        return
 
     reply_line_message(
         reply_token,
         "請輸入「設定」、「查詢」、「我的資料」、「開啟通知」或「關閉通知」。"
     )
 
+######################## MAILMIND cloud tunnel proxy ########################
+MAILMIND_URL = "http://127.0.0.1:8000"
+
+@app.route("/mailmind/health", methods=["GET"])
+def mailmind_health():
+    try:
+        r = requests.get(
+            f"{MAILMIND_URL}/health",
+            timeout=5
+        )
+        return Response(
+            r.content,
+            status=r.status_code,
+            content_type="application/json"
+        )
+    except requests.RequestException:
+        return {"error": "MailMind unavailable"}, 502
+
+
+@app.route("/mailmind/api/v1/ingest/gmail", methods=["POST"])
+def mailmind_ingest():
+    try:
+        r = requests.post(
+            f"{MAILMIND_URL}/api/v1/ingest/gmail",
+            data=request.get_data(),
+            headers={
+                "Content-Type": "application/json",
+                "X-MailMind-Token": request.headers.get(
+                    "X-MailMind-Token", ""
+                )
+            },
+            timeout=80
+        )
+
+        return Response(
+            r.content,
+            status=r.status_code,
+            content_type="application/json"
+        )
+
+    except requests.RequestException:
+        return {"error": "MailMind unavailable"}, 502
+
+@app.route("/mailmind/line/webhook", methods=["POST"])
+def mailmind_line_webhook_proxy():
+    try:
+        upstream = requests.post(
+            f"{MAILMIND_URL}/line/webhook",
+            data=request.get_data(),
+            headers={
+                "Content-Type": request.headers.get(
+                    "Content-Type", "application/json"
+                ),
+                "X-Line-Signature": request.headers.get(
+                    "X-Line-Signature", ""
+                ),
+            },
+            timeout=25,
+        )
+
+        return Response(
+            upstream.content,
+            status=upstream.status_code,
+            content_type="application/json",
+        )
+
+    except requests.RequestException:
+        return {"error": "MailMind unavailable"}, 502
+######################## MAILMIND cloud tunnel proxy ########################
 
 @app.get("/health")
 def health():
